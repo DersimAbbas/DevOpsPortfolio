@@ -1,0 +1,29 @@
+#boilerplate required
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-test-pod
+  labels:
+    app: myapp
+    type: frontend
+#-----
+
+#configuration of the running pods
+spec:
+  containers:
+    - name: nginx-container
+      image: nginx
+      ports:
+        - containerPort: 80
+      resources:
+        requests:
+          memory: "128Mi"
+          cpu: "10m"
+        limits:
+          memory: "256Mi"
+          cpu: "100m"
+  restartPolicy: Always
+
+#kubectl create -f  pod-definition.yml
+#kubectl get pods
+#kubectl describe pods or pod "pod name"
