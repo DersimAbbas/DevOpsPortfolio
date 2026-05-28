@@ -1,2 +1,93 @@
-# annotate from docs here more extensive declaration and comment on objects and lines
-#reason "why" it is required or optional and for what purpose
+# Annotated Deployment manifest — reference for the fields a minimal Deployment skips.
+# A Deployment = "I want N copies of this Pod, and I want safe rolling updates + rollback."
+# It creates a ReplicaSet under the hood, which in turn creates the Pods.
+
+apiVersion: apps/v1 # [REQUIRED] Deployments live in apps/v1 (NOT v1)
+kind: Deployment # [REQUIRED]
+metadata:
+  name: nginx-deployment # [REQUIRED] unique name within the namespace
+  namespace: default # optional, defaults to "default"
+  labels: # labels ON the Deployment object itself (not the Pods)
+    app: nginx
+  annotations:
+    kubernetes.io/change-cause: "rollout v1.27" # shows up in `kubectl rollout history`
+
+spec:
+  # --- replica & selector ---
+  replicas: 3 # desired Pod count. Default is 1 if omitted
+  selector: # [REQUIRED] which Pods this Deployment owns
+    matchLabels: # filter Pods for the Deployment to manage
+      app: nginx # MUST match labels in spec.template.metadata.labels
+
+  # --- rollout behavior ---
+  strategy:
+    type: RollingUpdate # RollingUpdate (default) | Recreate (kill all, then start new)
+    rollingUpdate:
+      maxSurge: 1 # extra Pods allowed above `replicas` during rollout
+      maxUnavailable: 0 # how many Pods can be down during rollout (0 = zero-downtime)
+  minReadySeconds: 5 # Pod must be Ready this long before counted as available
+  progressDeadlineSeconds: 600 # mark rollout as Failed if no progress within this window
+  revisionHistoryLimit: 10 # keep N old ReplicaSets around for rollback (default 10)
+
+  # --- Pod template: this block is essentially a Pod spec ---
+  template:
+    metadata:
+      labels: # MUST include the labels in spec.selector.matchLabels
+        app: nginx # these labels go on every Pod created by the Deployment
+    spec:
+      restartPolicy: Always # Deployments require Always (others would fight the controller)
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: nginx
+          image: nginx:1.27 # pin a version — :latest defeats rollback
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+
+          env: # env vars passed to the container
+            - name: APP_ENV
+              value: "production"
+
+          resources:
+            requests: # scheduling guarantee
+              memory: "128Mi"
+              cpu: "10m"
+            limits: # hard cap — memory over = OOMKilled, CPU over = throttled
+              memory: "256Mi"
+              cpu: "100m"
+
+          # --- probes drive rolling update safety: a Pod isn't "ready" until readinessProbe passes ---
+          livenessProbe: # failed = restart the container
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe: # failed = remove from Service + block rollout progression
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+          volumeMounts:
+            - name: config-vol
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+
+      volumes:
+        - name: config-vol # mount a ConfigMap as files into the container
+          configMap:
+            name: nginx-config
+
+# --- handy commands ---
+# kubectl apply -f deployment-annotated.yaml          # create or update
+# kubectl get deployments                             # or `kubectl get deploy`
+# kubectl get rs                                      # see the ReplicaSets this Deployment owns
+# kubectl get pods -l app=nginx                       # see the Pods by label
+# kubectl rollout status deploy/nginx-deployment      # watch a rollout finish
+# kubectl rollout history deploy/nginx-deployment     # list revisions
+# kubectl rollout undo deploy/nginx-deployment        # roll back to previous revision
+# kubectl scale deploy/nginx-deployment --replicas=5  # imperative scale (will revert on next apply)
+# kubectl set image deploy/nginx-deployment nginx=nginx:1.28   # trigger a new rollout

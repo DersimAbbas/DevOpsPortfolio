@@ -1,0 +1,70 @@
+# Annotated ReplicaSet manifest — reference for "what does an RS look like fully spelled out?"
+# A ReplicaSet = "keep N copies of this Pod running, full stop."
+# No rolling updates, no rollbacks — that's what Deployment adds on top.
+
+apiVersion: apps/v1 # [REQUIRED] RS lives in apps/v1 (older RC lived in v1 — easy mistake)
+kind: ReplicaSet # [REQUIRED]
+metadata:
+  name: myapp-replicaset # [REQUIRED] unique name within the namespace
+  namespace: default # optional, defaults to "default"
+  labels: # labels ON the RS object itself (not the Pods it manages)
+    app: myapp
+    tier: frontend
+
+spec:
+  # --- replica count ---
+  replicas: 3 # desired Pod count. Default is 1 if omitted
+
+  # --- selector: how the RS decides which Pods are "its" Pods ---
+  selector: # [REQUIRED] (unlike RC, where it's optional)
+    matchLabels: # simple equality match — filter pods for the ReplicaSet
+      tier: frontend
+    matchExpressions: # set-based — the RS feature RC didn't have
+      - key: app # label key
+        operator: In # In | NotIn | Exists | DoesNotExist
+        values: [myapp, myapp-v2] # Pod matches if its `app` label is one of these
+
+  # --- Pod template: every Pod the RS creates is stamped out of this ---
+  template:
+    metadata:
+      labels: # MUST satisfy spec.selector above, or API server rejects manifest
+        app: myapp
+        tier: frontend
+    spec:
+      restartPolicy: Always # RS requires Always (Never/OnFailure would fight the controller)
+      containers:
+        - name: nginx-container # [REQUIRED] container name (unique within the Pod)
+          image: nginx:1.27 # pin a tag — :latest is unpredictable
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+
+          resources:
+            requests: # scheduler reserves this much on the node
+              memory: "128Mi"
+              cpu: "10m"
+            limits: # hard ceiling
+              memory: "256Mi"
+              cpu: "100m"
+
+          readinessProbe: # Pod won't be counted as available until this passes
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+  minReadySeconds: 5 # Pod must be Ready this long before counted as available
+
+
+# --- handy commands ---
+# kubectl apply -f replicaSet-annotated.yml         # create or update declaratively
+# kubectl create -f replicaSet-annotated.yml        # imperative create (fails if exists)
+# kubectl get rs                                    # list ReplicaSets
+# kubectl describe rs myapp-replicaset              # detailed status + events
+# kubectl get pods -l tier=frontend                 # Pods managed by this RS (matched by label)
+# kubectl scale rs/myapp-replicaset --replicas=5    # imperative scale
+# kubectl replace -f replicaSet-annotated.yml       # replace existing (fails if missing)
+# kubectl replace --force -f replicaSet-annotated.yml   # delete + recreate (needed when `selector` changes — it's immutable)
+# kubectl delete rs myapp-replicaset                # delete RS and its Pods

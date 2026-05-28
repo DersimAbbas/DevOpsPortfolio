@@ -124,6 +124,120 @@ etcdctl get key1
 
 ---
 
+## Controllers: ReplicationController → ReplicaSet → Deployment
+
+These are the three workload controllers that keep Pods alive. They build on each other — know all three for the exam, even though you'll only really use Deployments day-to-day.
+
+### ReplicationController (RC) — the original
+
+- The **older** way of running N copies of a Pod.
+- Ensures the specified number of replicas is always running. If a Pod dies, RC spins up a new one.
+- Supports only **equality-based label selectors** (`key=value`).
+- `selector` field is **optional** — if you omit it, RC inherits and monitor already existing / created pods from the Pod template labels.
+- API: `apiVersion: v1`, `kind: ReplicationController`.
+
+### ReplicaSet (RS) — the newer replacement
+
+- Same job as RC: keep N Pods running.
+- Adds **set-based selectors** (`key in (a, b, c)`, `key notin (...)`, `key`, `!key`) — much more flexible.
+- `selector` field is **required**, and it must match the Pod template labels (the API server will reject the manifest otherwise).
+- API: `apiVersion: apps/v1`, `kind: ReplicaSet`.
+
+> **Rule of thumb:** never reach for RC in new manifests. RS is a strict superset.
+
+### Deployment — the one you actually use
+
+- A **higher-level controller** that manages ReplicaSets for you.
+- Adds the things you actually need in production:
+  - **Rolling updates** — replace Pods gradually instead of all at once.
+  - **Rollbacks** — `kubectl rollout undo` reverts to the previous ReplicaSet.
+  - **Revision history** — every change creates a new RS; old ones are kept (default: 10) so you can roll back.
+  - **Pause/resume** rollouts mid-flight.
+- API: `apiVersion: apps/v1`, `kind: Deployment`.
+
+**How Deployment relates to RS:** a Deployment _owns_ a ReplicaSet, which _owns_ the Pods. When you change the Pod template in a Deployment, it creates a **new** RS, scales it up while scaling the old RS down, and keeps the old one around (at 0 replicas) for rollback.
+
+### Why would you ever use a ReplicaSet on its own?
+
+Honestly, almost never in production. But the exam likes to test the distinction, and there are a few cases:
+
+- **You don't need rolling updates or rollbacks** — e.g., a stateless workload you'll never change after deploy.
+- **You're writing a custom controller** that manages Pod lifecycle itself and just wants the "keep N alive" guarantee from RS without the Deployment's rollout machinery on top.
+- **CKA exam tasks** — they sometimes ask you to write/fix an RS manifest directly to test that you understand the selector/template relationship without the Deployment doing it for you.
+
+> **Rule of thumb:** for any real app, use a Deployment. Use a bare ReplicaSet only when you _actively don't want_ the Deployment's update behavior.
+
+---
+
+## kubectl commands cheat sheet
+
+### Creating & updating
+
+| Command                                | What it does                                                                 |
+| -------------------------------------- | ---------------------------------------------------------------------------- |
+| `kubectl create -f manifest.yaml`      | Create the object. **Fails** if it already exists.                           |
+| `kubectl apply -f manifest.yaml`       | Create or update (declarative). Use this most of the time.                   |
+| `kubectl replace -f manifest.yaml`     | Replace an existing object with the manifest. **Fails** if it doesn't exist. |
+| `kubectl replace --force -f file.yaml` | Delete and recreate. Useful when a field is immutable (e.g. RS `selector`).  |
+| `kubectl delete -f manifest.yaml`      | Delete whatever the manifest describes.                                      |
+| `kubectl edit <kind> <name>`           | Open the live object in `$EDITOR`. Saving applies the change.                |
+
+> `create` vs `apply`: `create` is imperative (one-shot). `apply` is declarative — it tracks the last-applied config and merges changes. Pick one style per workflow and stick with it.
+
+### Reading
+
+| Command                                 | What it shows                                              |
+| --------------------------------------- | ---------------------------------------------------------- |
+| `kubectl get pods`                      | List Pods in the current namespace.                        |
+| `kubectl get pods -o wide`              | Adds node, Pod IP, etc.                                    |
+| `kubectl get pods -A`                   | All namespaces.                                            |
+| `kubectl get rc`                        | ReplicationControllers.                                    |
+| `kubectl get rs` (or `replicaset`)      | ReplicaSets.                                               |
+| `kubectl get deployments` (or `deploy`) | Deployments.                                               |
+| `kubectl get all`                       | Pods, Services, Deployments, RS, etc. in one shot.         |
+| `kubectl describe pod <name>`           | Detailed status + recent events. First stop for debugging. |
+| `kubectl describe deploy <name>`        | Same, for a Deployment.                                    |
+| `kubectl logs <pod>`                    | Stdout/stderr from the Pod's container.                    |
+| `kubectl logs <pod> -c <container>`     | Specific container in a multi-container Pod.               |
+| `kubectl logs -f <pod>`                 | Follow (tail).                                             |
+
+### Scaling
+
+| Command                                        | What it does                      |
+| ---------------------------------------------- | --------------------------------- |
+| `kubectl scale --replicas=5 rs/<name>`         | Scale an RS imperatively.         |
+| `kubectl scale --replicas=5 deployment/<name>` | Scale a Deployment imperatively.  |
+| `kubectl scale --replicas=5 -f manifest.yaml`  | Scale via the manifest reference. |
+
+> Imperative `scale` is fine in the moment, but it won't update your YAML — next `apply` will revert it. For permanent changes, edit the manifest and `apply`.
+
+### Rollouts (Deployments only)
+
+| Command                                              | What it does                        |
+| ---------------------------------------------------- | ----------------------------------- |
+| `kubectl rollout status deploy/<name>`               | Watch a rollout finish.             |
+| `kubectl rollout history deploy/<name>`              | List previous revisions.            |
+| `kubectl rollout undo deploy/<name>`                 | Roll back to the previous revision. |
+| `kubectl rollout undo deploy/<name> --to-revision=N` | Roll back to a specific revision.   |
+| `kubectl rollout pause deploy/<name>`                | Pause an in-flight rollout.         |
+| `kubectl rollout resume deploy/<name>`               | Resume it.                          |
+
+### Quick imperative shortcuts (handy on the exam)
+
+```bash
+# Generate a Pod manifest without creating it
+kubectl run nginx --image=nginx --dry-run=client -o yaml > pod.yaml
+
+# Generate a Deployment manifest
+kubectl create deployment nginx --image=nginx --replicas=3 --dry-run=client -o yaml > deploy.yaml
+
+# Explain a field — invaluable when you forget the YAML schema
+kubectl explain pod.spec.containers
+kubectl explain replicaset.spec --recursive
+```
+
+---
+
 ## Container runtimes & CRI
 
 - **CRI** = Container Runtime Interface. The contract a runtime must implement to plug into Kubernetes.

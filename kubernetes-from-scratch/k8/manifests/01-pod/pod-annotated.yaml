@@ -1,2 +1,107 @@
-# annotate from docs here more extensive declaration and comment on objects and lines
-#reason "why" it is required or optional and for what purpose
+# Annotated Pod manifest — reference for "what else can I put in here?"
+# Every field has a short comment. Required fields are marked [REQUIRED].
+
+apiVersion: v1 # [REQUIRED] core API group, Pods live in v1
+kind: Pod # [REQUIRED] object type
+metadata:
+  name: myapp-annotated-pod # [REQUIRED] unique name within the namespace
+  namespace: default # optional, defaults to "default" if omitted
+  labels: # key/value tags — Services and controllers match on these
+    app: myapp # common convention: app=<name>
+    tier: frontend # used to filter/group Pods (kubectl get pods -l tier=frontend)
+  annotations: # free-form metadata, NOT used for selection (unlike labels)
+    description: "demo pod for CKA notes" # human-readable notes, tool hints, build info, etc.
+
+spec:
+  # --- scheduling & runtime behavior ---
+  restartPolicy: Always # Always | OnFailure | Never. Always = default for Pods
+  terminationGracePeriodSeconds: 30 # how long to wait after SIGTERM before SIGKILL (default 30)
+  serviceAccountName: default # which ServiceAccount the Pod runs as (RBAC identity)
+  nodeSelector: # constrain Pod to nodes matching these labels
+    disktype: ssd # only schedule on nodes labeled disktype=ssd
+
+  # --- init containers run to completion BEFORE the main containers start ---
+  initContainers:
+    - name: init-wait # use to seed data, wait for a dependency, run migrations
+      image: busybox:1.36
+      command: ["sh", "-c", "echo init done"]
+
+  # --- the actual app containers ---
+  containers:
+    - name: nginx-container # [REQUIRED] container name (must be unique within Pod)
+      image: nginx:1.27 # [REQUIRED] pin a tag — never use :latest in prod
+      imagePullPolicy: IfNotPresent # Always | IfNotPresent | Never. IfNotPresent saves pulls
+
+      ports:
+        - name: http # name the port so Services can reference it by name
+          containerPort: 80 # port the container listens on (informational, not a firewall)
+          protocol: TCP # TCP | UDP | SCTP, defaults to TCP
+
+      # --- environment variables ---
+      env: # inline env vars
+        - name: APP_ENV
+          value: "production"
+        - name: POD_IP # pull values from the Pod itself via downward API
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+      envFrom: # bulk-load env vars from a ConfigMap or Secret
+        - configMapRef:
+            name: app-config # every key in this ConfigMap becomes an env var
+
+      # --- resources: requests = scheduling guarantee, limits = hard cap ---
+      resources:
+        requests: # scheduler uses this to pick a node with enough room
+          memory: "128Mi"
+          cpu: "10m" # 10m = 0.01 CPU core
+        limits: # container is throttled/killed if it exceeds this
+          memory: "256Mi" # OOMKilled if exceeded
+          cpu: "100m" # CPU is throttled, not killed
+
+      # --- probes: kubelet uses these to know if the container is healthy ---
+      livenessProbe: # if this fails, kubelet RESTARTS the container
+        httpGet:
+          path: /healthz
+          port: http
+        initialDelaySeconds: 10 # wait this long before the first check
+        periodSeconds: 10 # how often to probe
+        failureThreshold: 3 # after N failures in a row, act
+      readinessProbe: # if this fails, Pod is removed from Service endpoints
+        httpGet:
+          path: /ready
+          port: http
+        initialDelaySeconds: 5
+        periodSeconds: 5
+      startupProbe: # for slow-starting apps — disables liveness until it passes
+        httpGet:
+          path: /healthz
+          port: http
+        failureThreshold: 30 # gives the app up to 30 * periodSeconds to come up
+        periodSeconds: 10
+
+      # --- mount volumes declared at Pod level into this container ---
+      volumeMounts:
+        - name: config-vol # must match a name in spec.volumes below
+          mountPath: /etc/app # where it appears inside the container
+          readOnly: true
+
+      # --- container-level security settings ---
+      securityContext:
+        runAsNonRoot: true # refuse to start if image runs as UID 0
+        runAsUser: 1000 # run process as this UID
+        allowPrivilegeEscalation: false # prevents setuid binaries from gaining privileges
+        readOnlyRootFilesystem: true # makes "/" read-only — app must write to mounted volumes
+
+  # --- volumes are declared at Pod level, then mounted per container above ---
+  volumes:
+    - name: config-vol # name referenced by volumeMounts
+      configMap: # source: a ConfigMap. Also: secret, emptyDir, persistentVolumeClaim
+        name: app-config
+
+# --- handy commands ---
+# kubectl create -f pod-annotated.yaml          # imperative create (fails if exists)
+# kubectl apply -f pod-annotated.yaml           # declarative create/update (preferred)
+# kubectl get pods -o wide                      # see node + IP
+# kubectl describe pod myapp-annotated-pod      # events + status (first stop when debugging)
+# kubectl logs myapp-annotated-pod -c nginx-container
+# kubectl exec -it myapp-annotated-pod -- sh    # shell into the container
