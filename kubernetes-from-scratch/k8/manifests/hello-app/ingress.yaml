@@ -1,17 +1,17 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: myapp-ingress
+  name: nginxdemo-ingress
 spec:
   ingressClassName: nginx
   rules:
-    - host: myapp.192.168.56.30.nip.io
+    - host: pokemon.192.168.56.30.nip.io
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: nginx-service
+                name: pokedex-service
                 port:
                   number: 80

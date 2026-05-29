@@ -253,6 +253,114 @@ kubectl explain replicaset.spec --recursive
 
 ---
 
+## Production-shape ingress flow (local Vagrant cluster)
+
+The traffic path I built for the hard-way cluster (2 control planes, 2 workers, 1 LB node):
+
+```
+browser
+   │  http://<app>.192.168.56.30.nip.io
+   ▼
+HAProxy on LB node (:80)            ← one stable entrypoint
+   │  round-robin, health-checked
+   ▼
+worker:<ingress NodePort>           ← e.g. 31665 (HTTP), 30439 (HTTPS)
+   │
+   ▼
+ingress-nginx controller pod        ← matches Host header against Ingress rules
+   │
+   ▼
+ClusterIP Service                   ← stable in-cluster name
+   │
+   ▼
+app pod(s)
+```
+
+**Why this shape:**
+
+- HAProxy config stays **static** — just `worker1:NodePort` and `worker2:NodePort`. Adding a new app never touches it.
+- Routing decisions live in **Ingress resources**, which is real Kubernetes YAML.
+- App Services are **ClusterIP only** — no per-app NodePort, no extra surface area.
+- Two layers of load balancing: HAProxy (across workers) → kube-proxy (across pods).
+
+### Components — install vs. write
+
+| Layer                          | Install once                                                     | Write per app                        |
+| ------------------------------ | ---------------------------------------------------------------- | ------------------------------------ |
+| HAProxy on LB node             | `/etc/haproxy/haproxy.cfg` (one frontend + one backend on `:80`) | —                                    |
+| Ingress **controller**         | `kubectl apply -f .../ingress-nginx/.../baremetal/deploy.yaml`   | —                                    |
+| Ingress **resource**           | —                                                                | One per app (`host:` → service name) |
+| Deployment + ClusterIP Service | —                                                                | Per app                              |
+
+> **Controller vs. resource:** Controller = the running program (like `apt install nginx`). Resource = one routing rule (like a `server { }` block). Same `kubectl apply`, completely different roles.
+
+### HAProxy: add alongside the existing apiserver frontend
+
+The LB already balances `kubectl` traffic on 6443 across control planes. **Add** the ingress frontend; don't replace.
+
+```
+frontend kubernetes-ingress-http
+    bind 192.168.56.30:80
+    mode tcp
+    default_backend kubernetes-ingress-backend
+
+backend kubernetes-ingress-backend
+    mode tcp
+    balance roundrobin
+    option tcp-check
+    server worker01 192.168.56.21:<ingress-NodePort> check fall 3 rise 2
+    server worker02 192.168.56.22:<ingress-NodePort> check fall 3 rise 2
+```
+
+Then: `sudo haproxy -c -f /etc/haproxy/haproxy.cfg` → `sudo systemctl reload haproxy`.
+
+### DNS with zero hosts-file editing — `nip.io`
+
+`<anything>.<IP>.nip.io` resolves to that IP. Use the LB IP in the middle, vary the prefix per app:
+
+```
+pokemon.192.168.56.30.nip.io   →  192.168.56.30
+api.192.168.56.30.nip.io       →  192.168.56.30
+```
+
+The `host:` in the Ingress matches on the prefix. No DNS server, no hosts file, no notepad-as-admin.
+
+### Gotchas that bit me
+
+- **Wrong manifest URL for ingress-nginx** — make sure the version tag in the URL exists (`controller-v1.15.1` worked; older guesses 404'd). Pull the current one from `https://kubernetes.github.io/ingress-nginx/deploy/`.
+- **Admission webhook timeout** (`context deadline exceeded`) on bare-metal — apiserver can't reach the webhook pod IP because CNI routing isn't symmetric. Lab workaround: `kubectl delete validatingwebhookconfiguration ingress-nginx-admission`. Controller still works fine; you just lose YAML pre-validation.
+- **`ingressClassName` must match** the installed controller's IngressClass (`kubectl get ingressclass` → usually `nginx`, **not** `nginx-example`).
+- **YAML list mistake** — `rules:` must start with `- host:` (it's a list, not a map). If you forget the dash you get `cannot unmarshal object into Go struct field IngressSpec.spec.rules of type []v1.IngressRule`.
+- **Service selector is an AND** — pods must have _all_ labels in the selector. Selector `app: pokedex, type: frontend` but pod only labeled `app: pokedex` → zero endpoints → ingress returns **503 Service Temporarily Unavailable**.
+- **Random NodePorts drift on reinstall** — pin the ingress controller's NodePort (edit the `ingress-nginx-controller` Service's `nodePort:` to something fixed) so HAProxy doesn't silently break.
+- **PowerShell `curl` is `Invoke-WebRequest`** — use `curl.exe -H "Host: x"` for the Unix-style syntax.
+- **HAProxy `bind 192.168.56.30:80` doesn't listen on localhost** — only on that specific interface. Test against the actual bound IP from the LB node.
+- **`:latest` doesn't auto-update on apply** — `kubectl rollout restart deployment/<name>` forces fresh pull (because `imagePullPolicy` defaults to `Always` for `:latest`).
+
+### Debugging "Ingress isn't working"
+
+Walk the chain from the bottom up. `kubectl get endpoints <service>` is the single best command:
+
+| Symptom                                  | Most likely cause                                             | Check                                                              |
+| ---------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------ |
+| 503 Service Temporarily Unavailable      | Service has no endpoints (selector mismatch / pods not Ready) | `kubectl get endpoints <svc>` — should list pod IPs                |
+| 404 Not Found                            | Ingress rule didn't match the request                         | `kubectl describe ingress` — verify `host:` and `ingressClassName` |
+| `connection refused`                     | HAProxy not listening, or wrong port                          | `sudo ss -tlnp \| grep haproxy` on LB node                         |
+| `connection refused` only on `localhost` | HAProxy bound to specific IP, not `*`                         | Expected; hit the bound IP instead                                 |
+| 400 Bad Request on the HTTPS NodePort    | Sent plain HTTP to a TLS listener                             | Use the HTTP NodePort (port `80:` mapping)                         |
+
+### Adding a new app (5-minute checklist)
+
+1. Write `deployment.yaml` (label your pods uniquely, e.g. `app: <name>`).
+2. Write `service.yaml` — `type: ClusterIP`, selector matches **exactly** the pod labels.
+3. Write `ingress.yaml` with `host: <name>.192.168.56.30.nip.io` and `ingressClassName: nginx`.
+4. `kubectl apply -f <folder>/`.
+5. `kubectl get endpoints <svc>` — confirm pods are wired up. Browser → `http://<name>.192.168.56.30.nip.io`.
+
+No HAProxy change. No hosts file change. That's the architectural win.
+
+---
+
 ## Things I want to remember
 
 - Pods are **ephemeral**. Don't rely on Pod IPs — go through a Service.
