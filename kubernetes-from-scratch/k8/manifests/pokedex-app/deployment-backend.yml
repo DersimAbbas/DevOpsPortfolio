@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+spec:
+  selector:
+    matchLabels:
+      app: pokeapi
+  template:
+    metadata:
+      labels:
+        app: pokeapi
+    spec:
+      containers:
+        - name: pokeapi
+          image: dersimabbas/pokeapi:v1
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "500m"
+            limits:
+              memory: "512Mi"
+              cpu: "1"
+          ports:
+            - containerPort: 80
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                { secretKeyRef: { name: postgres-secret, key: POSTGRES_USER } }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                {
+                  secretKeyRef:
+                    { name: postgres-secret, key: POSTGRES_PASSWORD },
+                }
+            - name: POSTGRES_DB
+              valueFrom:
+                { secretKeyRef: { name: postgres-secret, key: POSTGRES_DB } }
+            - name: ConnectionStrings__Postgres
+              value: "Host=postgres-service;Port=5432;Database=$(POSTGRES_DB);Username=$(POSTGRES_USER);Password=$(POSTGRES_PASSWORD)"
+            - name: ASPNETCORE_URLS
+              value: "http://+:80"

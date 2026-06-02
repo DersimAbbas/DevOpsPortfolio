@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: pokemon
-          image: dersimabbas/pokedex-ui:latest
+          image: dersimabbas/pokedex:v3
           imagePullPolicy: Always
           ports:
             - containerPort: 80
